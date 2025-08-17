@@ -17,7 +17,7 @@ export const Message = React.memo(function Message({ content, sender, timestamp 
 
   return (
     <div className={cn(
-      'flex gap-3 mb-6 animate-in fade-in slide-in-from-bottom-2 duration-500', 
+      'flex gap-3 mb-6 animate-in fade-in slide-in-from-bottom-2 duration-500 animate-subtle-float', 
       isUser && 'flex-row-reverse'
     )}>
       <Avatar className={cn(
