@@ -56,7 +56,7 @@ export default function RegisterPage() {
       } else if (!result.error) {
         // Sign up successful but no session (likely email verification required)
         console.log('Sign up successful, redirecting to login')
-        router.push('/auth/login?message=Account created successfully! Please sign in to continue.')
+        router.push('/auth/login?message=Account created successfully! Please check your email to verify your account.')
       } else {
         // Only show error if there's an actual error
         console.error('Sign up failed:', result.error)
