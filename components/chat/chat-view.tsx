@@ -8,7 +8,7 @@ import { MESSAGES_SUBSCRIPTION } from "@/lib/graphql/subscriptions";
 import { Message } from "./message";
 import { MessageInput } from "./message-input";
 import { Button } from "@/components/ui/button";
-import { ArrowLeft, Loader2, Bot, User } from "lucide-react";
+import { ArrowLeft, Loader2, Bot } from "lucide-react";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
 import Link from "next/link";
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
@@ -25,7 +25,6 @@ interface MessageType {
   content: string;
   sender: "user" | "bot";
   created_at: string;
-  // If available, uncomment these for stronger keys:
   // user_id?: string;
   // chat_id?: string;
 }
@@ -57,7 +56,7 @@ type OptimisticMsg = {
   content: string;
   created_at: string; // ISO
   sender: "user";
-  // user_id?: string; // if available
+  // user_id?: string;
 };
 
 export function ChatView({ chatId }: ChatViewProps) {
@@ -126,9 +125,15 @@ export function ChatView({ chatId }: ChatViewProps) {
 
         const sTs = new Date(serverCreatedAt).getTime();
         // Find the earliest optimistic whose time is within the window
-        const idx = q.findIndex(
-          (o) => Math.abs(new Date(o.created_at).getTime() - sTs) <= windowMs
-        );
+        let idx = -1;
+        for (let i = 0; i < q.length; i++) {
+          const oTs = new Date(q[i].created_at).getTime();
+          if (Math.abs(oTs - sTs) <= windowMs) {
+            idx = i;
+            break;
+          }
+        }
+
         if (idx >= 0) {
           q.splice(idx, 1);
           if (q.length === 0) next.delete(key);
@@ -143,7 +148,11 @@ export function ChatView({ chatId }: ChatViewProps) {
 
   const flattenOptimistic = useCallback((map: Map<string, OptimisticMsg[]>) => {
     const out: OptimisticMsg[] = [];
-    for (const [, q] of map) out.push(...q);
+    map.forEach((q) => {
+      for (let i = 0; i < q.length; i++) {
+        out.push(q[i]);
+      }
+    });
     return out;
   }, []);
 
@@ -152,8 +161,9 @@ export function ChatView({ chatId }: ChatViewProps) {
     const server: MessageType[] = messagesData?.messages || [];
     if (!server.length) return;
 
-    for (const sm of server) {
-      if (sm.sender === "user" && sm.content?.trim()) {
+    for (let i = 0; i < server.length; i++) {
+      const sm = server[i];
+      if (sm.sender === "user" && sm.content && sm.content.trim()) {
         popOptimisticIfMatch(sm.content, sm.created_at, 10000);
       }
     }
@@ -168,19 +178,24 @@ export function ChatView({ chatId }: ChatViewProps) {
     (function debugDupes() {
       const userMsgs = server.filter((m) => m.sender === "user");
       const byContent: Record<string, MessageType[]> = {};
-      for (const m of userMsgs) {
+      for (let i = 0; i < userMsgs.length; i++) {
+        const m = userMsgs[i];
         const key = (m.content || "").trim();
-        (byContent[key] ||= []).push(m);
+        if (!byContent[key]) byContent[key] = [];
+        byContent[key].push(m);
       }
-      for (const [content, arr] of Object.entries(byContent)) {
-        if (arr.length > 1) {
+      const keys = Object.keys(byContent);
+      for (let k = 0; k < keys.length; k++) {
+        const content = keys[k];
+        const arr = byContent[content];
+        if (arr && arr.length > 1) {
           const sorted = arr
             .slice()
             .sort(
               (a, b) =>
                 new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
             );
-          const closePairs = [];
+          const closePairs: Array<[MessageType, MessageType]> = [];
           for (let i = 0; i < sorted.length - 1; i++) {
             const dt = Math.abs(
               new Date(sorted[i + 1].created_at).getTime() -
@@ -206,33 +221,48 @@ export function ChatView({ chatId }: ChatViewProps) {
       }
     })();
 
-    const combined: Array<MessageType | (OptimisticMsg & { id: string })> = [
-      ...server,
-      ...optimisticList.map((o) => ({
+    const combined: Array<MessageType | (OptimisticMsg & { id: string })> = [];
+
+    // Push server messages
+    for (let i = 0; i < server.length; i++) {
+      combined.push(server[i]);
+    }
+    // Push remaining optimistic as temporary items
+    for (let i = 0; i < optimisticList.length; i++) {
+      const o = optimisticList[i];
+      combined.push({
         id: `optimistic:${o.clientId}`,
         content: o.content,
-        sender: "user" as const,
+        sender: "user",
         created_at: o.created_at,
-      })),
-    ];
+      } as any);
+    }
 
     // 1) Prefer server over optimistic when near-duplicates exist (1s window)
     const byContentAll: Record<
       string,
       Array<{ id: string; sender: string; created_at: string }>
     > = {};
-    for (const m of combined) {
+    for (let i = 0; i < combined.length; i++) {
+      const m = combined[i];
       const key = (m.content || "").trim();
-      (byContentAll[key] ||= []).push({
+      if (!byContentAll[key]) byContentAll[key] = [];
+      byContentAll[key].push({
         id: m.id,
         sender: (m as any).sender,
         created_at: m.created_at,
       });
     }
 
-    let keepIds = new Set<string>(combined.map((m) => m.id));
-    for (const key of Object.keys(byContentAll)) {
-      const arr = byContentAll[key].sort(
+    let keepIds = new Set<string>();
+    for (let i = 0; i < combined.length; i++) {
+      keepIds.add(combined[i].id);
+    }
+
+    const contentKeys = Object.keys(byContentAll);
+    for (let c = 0; c < contentKeys.length; c++) {
+      const key = contentKeys[c];
+      const arr = byContentAll[key].slice().sort(
         (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
       );
       for (let i = 0; i < arr.length - 1; i++) {
@@ -251,17 +281,26 @@ export function ChatView({ chatId }: ChatViewProps) {
     }
 
     // 2) Server-only dedupe: for user messages with identical content within 2s, keep the EARLIER one
-    const serverUser = combined.filter(
-      (m) => (m as any).sender === "user" && !m.id.startsWith("optimistic:")
-    ) as MessageType[];
-    const byContentServer: Record<string, Array<{ id: string; created_at: string }>> =
-      {};
-    for (const m of serverUser) {
-      const key = (m.content || "").trim();
-      (byContentServer[key] ||= []).push({ id: m.id, created_at: m.created_at });
+    const serverUser: MessageType[] = [];
+    for (let i = 0; i < combined.length; i++) {
+      const m = combined[i] as any;
+      if (m.sender === "user" && typeof m.id === "string" && !m.id.startsWith("optimistic:")) {
+        serverUser.push(m as MessageType);
+      }
     }
-    for (const key of Object.keys(byContentServer)) {
-      const arr = byContentServer[key].sort(
+
+    const byContentServer: Record<string, Array<{ id: string; created_at: string }>> = {};
+    for (let i = 0; i < serverUser.length; i++) {
+      const m = serverUser[i];
+      const key = (m.content || "").trim();
+      if (!byContentServer[key]) byContentServer[key] = [];
+      byContentServer[key].push({ id: m.id, created_at: m.created_at });
+    }
+
+    const serverKeys = Object.keys(byContentServer);
+    for (let s = 0; s < serverKeys.length; s++) {
+      const key = serverKeys[s];
+      const arr = byContentServer[key].slice().sort(
         (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
       );
       for (let i = 0; i < arr.length - 1; i++) {
@@ -277,11 +316,17 @@ export function ChatView({ chatId }: ChatViewProps) {
       }
     }
 
-    const final = combined.filter((m) => keepIds.has(m.id));
+    const final: MessageType[] = [];
+    for (let i = 0; i < combined.length; i++) {
+      const m = combined[i] as MessageType;
+      if (keepIds.has(m.id)) final.push(m);
+    }
+
     final.sort(
       (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
     );
-    return final as MessageType[];
+
+    return final;
   }, [messagesData?.messages, optimisticQueues, flattenOptimistic]);
 
   useEffect(() => {
@@ -395,7 +440,7 @@ export function ChatView({ chatId }: ChatViewProps) {
 
   return (
     <div className="flex flex-col h-screen">
-                  {/* Header */}
+      {/* Header */}
       <div className="border-b bg-background/80 backdrop-blur-sm p-4 animate-in fade-in slide-in-from-top-4 duration-1000">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-4 animate-in fade-in slide-in-from-left-4 duration-1000 delay-200">
