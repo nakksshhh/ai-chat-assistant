@@ -53,10 +53,6 @@ export default function RegisterPage() {
         // User is immediately signed in
         console.log('Sign up successful with session, redirecting to /chats')
         router.push('/chats')
-      } else if (result.needsEmailVerification) {
-        // Email verification required - redirect to login with success message
-        console.log('Sign up successful, email verification required')
-        router.push('/auth/login?message=Account created successfully! Please check your email to verify your account.')
       } else if (!result.error) {
         // Sign up successful but no session (likely email verification required)
         console.log('Sign up successful, redirecting to login')
