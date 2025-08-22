@@ -25,53 +25,27 @@ interface MessageType {
   content: string;
   sender: "user" | "bot";
   created_at: string;
-  // If available, uncomment these for stronger keys:
-  // user_id?: string;
-  // chat_id?: string;
 }
 
-// Simple UUID without extra deps
-function uuid() {
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
-    return crypto.randomUUID();
-  }
-  return Math.random().toString(36).slice(2) + Date.now().toString(36);
-}
-
-// Compare trimmed content
-function sameContent(a?: string, b?: string) {
-  return (a || "").trim() === (b || "").trim();
-}
-
-// Check two ISO timestamps within a window
-function withinWindow(aISO: string, bISO: string, ms: number) {
-  const a = new Date(aISO).getTime();
-  const b = new Date(bISO).getTime();
-  if (!isFinite(a) || !isFinite(b)) return false;
-  return Math.abs(a - b) <= ms;
-}
-
-// Optimistic message type
-type OptimisticMsg = {
-  clientId: string;
+// Simplified optimistic message type
+interface OptimisticMessage {
+  id: string;
   content: string;
-  created_at: string; // ISO
   sender: "user";
-  // user_id?: string; // if available
-};
+  created_at: string;
+  isOptimistic: true;
+}
+
+// Simple UUID generator
+function generateId() {
+  return `opt_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+}
 
 export function ChatView({ chatId }: ChatViewProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [isGeneratingBot, setIsGeneratingBot] = useState(false);
+  const [optimisticMessages, setOptimisticMessages] = useState<OptimisticMessage[]>([]);
   const isSubmittingRef = useRef(false);
-
-  // Per-content queues of optimistic messages for precise reconciliation
-  const [optimisticQueues, setOptimisticQueues] = useState<Map<string, OptimisticMsg[]>>(
-    () => new Map()
-  );
-
-  const instanceId = useRef(Math.random().toString(36).substring(2, 11));
-  console.log(`🔄 ChatView ${instanceId.current}`, { chatId });
 
   const { data: chatData, loading: chatLoading, error: chatError } = useQuery(GET_CHAT, {
     variables: { chatId },
@@ -84,6 +58,8 @@ export function ChatView({ chatId }: ChatViewProps) {
   } = useSubscription(MESSAGES_SUBSCRIPTION, {
     variables: { chatId },
     skip: !chatId,
+    // Add this to prevent duplicate subscriptions
+    fetchPolicy: 'cache-and-network'
   });
 
   const [insertUserMessage, { loading: sendingMessage }] = useMutation(INSERT_USER_MESSAGE);
@@ -93,233 +69,100 @@ export function ChatView({ chatId }: ChatViewProps) {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
 
-  // Helpers to manage optimistic queues
-  const pushOptimistic = useCallback((content: string) => {
-    const clientId = uuid();
-    const nowISO = new Date().toISOString();
-    const entry: OptimisticMsg = {
-      clientId,
-      content: content.trim(),
-      created_at: nowISO,
-      sender: "user",
-    };
-
-    setOptimisticQueues((prev) => {
-      const next = new Map(prev);
-      const key = entry.content;
-      const q = next.get(key) || [];
-      q.push(entry);
-      next.set(key, q);
-      return next;
-    });
-
-    return entry.clientId;
-  }, []);
-
-  const popOptimisticIfMatch = useCallback(
-    (content: string, serverCreatedAt: string, windowMs = 10000) => {
-      setOptimisticQueues((prev) => {
-        const next = new Map(prev);
-        const key = (content || "").trim();
-        const q = next.get(key);
-        if (!q || q.length === 0) return prev;
-
-        const sTs = new Date(serverCreatedAt).getTime();
-        // Find the earliest optimistic whose time is within the window
-        const idx = q.findIndex(
-          (o) => Math.abs(new Date(o.created_at).getTime() - sTs) <= windowMs
-        );
-        if (idx >= 0) {
-          q.splice(idx, 1);
-          if (q.length === 0) next.delete(key);
-          else next.set(key, q);
-          return next;
-        }
-        return prev;
-      });
-    },
-    []
-  );
-
-  const flattenOptimistic = useCallback((map: Map<string, OptimisticMsg[]>) => {
-    const out: OptimisticMsg[] = [];
-    for (const [, q] of map) out.push(...q);
-    return out;
-  }, []);
-
-  // Reconcile when subscription updates arrive: remove exactly one optimistic per matching server user message
+  // Clean up optimistic messages when real messages arrive
   useEffect(() => {
-    const server: MessageType[] = messagesData?.messages || [];
-    if (!server.length) return;
+    const serverMessages = messagesData?.messages || [];
+    
+    setOptimisticMessages(prev => {
+      return prev.filter(optMsg => {
+        // Remove optimistic message if we find a server message with same content
+        // within the last 30 seconds (to account for any delays)
+        const cutoffTime = new Date(Date.now() - 30000).toISOString();
+        
+        return !serverMessages.some(serverMsg => 
+          serverMsg.sender === "user" &&
+          serverMsg.content.trim() === optMsg.content.trim() &&
+          serverMsg.created_at > cutoffTime
+        );
+      });
+    });
+  }, [messagesData?.messages]);
 
-    for (const sm of server) {
-      if (sm.sender === "user" && sm.content?.trim()) {
-        popOptimisticIfMatch(sm.content, sm.created_at, 10000);
-      }
-    }
-  }, [messagesData?.messages, popOptimisticIfMatch]);
-
-  // Compose final message list: server messages + remaining optimistic (with temp ids)
+  // Combine and deduplicate messages
   const messages = useMemo(() => {
-    const server: MessageType[] = messagesData?.messages || [];
-    const optimisticList = flattenOptimistic(optimisticQueues);
-
-    // TEMP DEBUG: detect potential duplicate server rows (content within 5s)
-    (function debugDupes() {
-      const userMsgs = server.filter((m) => m.sender === "user");
-      const byContent: Record<string, MessageType[]> = {};
-      for (const m of userMsgs) {
-        const key = (m.content || "").trim();
-        (byContent[key] ||= []).push(m);
+    const serverMessages: MessageType[] = messagesData?.messages || [];
+    
+    // Simple deduplication for server messages only
+    const deduplicatedServer = serverMessages.reduce((acc, message) => {
+      // Check if we already have this message (by content and timestamp similarity)
+      const isDuplicate = acc.some(existing => 
+        existing.content.trim() === message.content.trim() &&
+        existing.sender === message.sender &&
+        Math.abs(new Date(existing.created_at).getTime() - new Date(message.created_at).getTime()) < 2000
+      );
+      
+      if (!isDuplicate) {
+        acc.push(message);
       }
-      for (const [content, arr] of Object.entries(byContent)) {
-        if (arr.length > 1) {
-          const sorted = arr
-            .slice()
-            .sort(
-              (a, b) =>
-                new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-            );
-          const closePairs = [];
-          for (let i = 0; i < sorted.length - 1; i++) {
-            const dt = Math.abs(
-              new Date(sorted[i + 1].created_at).getTime() -
-                new Date(sorted[i].created_at).getTime()
-            );
-            if (dt <= 5000) {
-              closePairs.push([sorted[i], sorted[i + 1]]);
-            }
-          }
-          if (closePairs.length) {
-            console.log(
-              "🟡 Potential duplicate SERVER rows for content:",
-              content,
-              closePairs.map(([a, b]) => ({
-                a_id: a.id,
-                a_ts: a.created_at,
-                b_id: b.id,
-                b_ts: b.created_at,
-              }))
-            );
-          }
-        }
-      }
-    })();
+      
+      return acc;
+    }, [] as MessageType[]);
 
-    const combined: Array<MessageType | (OptimisticMsg & { id: string })> = [
-      ...server,
-      ...optimisticList.map((o) => ({
-        id: `optimistic:${o.clientId}`,
-        content: o.content,
-        sender: "user" as const,
-        created_at: o.created_at,
-      })),
+    // Combine with optimistic messages
+    const allMessages = [
+      ...deduplicatedServer,
+      ...optimisticMessages
     ];
 
-    // 1) Prefer server over optimistic when near-duplicates exist (1s window)
-    const byContentAll: Record<
-      string,
-      Array<{ id: string; sender: string; created_at: string }>
-    > = {};
-    for (const m of combined) {
-      const key = (m.content || "").trim();
-      (byContentAll[key] ||= []).push({
-        id: m.id,
-        sender: (m as any).sender,
-        created_at: m.created_at,
-      });
-    }
-
-    let keepIds = new Set<string>(combined.map((m) => m.id));
-    for (const key of Object.keys(byContentAll)) {
-      const arr = byContentAll[key].sort(
-        (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-      );
-      for (let i = 0; i < arr.length - 1; i++) {
-        const a = arr[i];
-        const b = arr[i + 1];
-        const dt = Math.abs(
-          new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-        );
-        if (dt <= 1000) {
-          const isAServer = !a.id.startsWith("optimistic:");
-          const isBServer = !b.id.startsWith("optimistic:");
-          if (isAServer && !isBServer) keepIds.delete(b.id);
-          else if (!isAServer && isBServer) keepIds.delete(a.id);
-        }
-      }
-    }
-
-    // 2) Server-only dedupe: for user messages with identical content within 2s, keep the EARLIER one
-    const serverUser = combined.filter(
-      (m) => (m as any).sender === "user" && !m.id.startsWith("optimistic:")
-    ) as MessageType[];
-    const byContentServer: Record<string, Array<{ id: string; created_at: string }>> =
-      {};
-    for (const m of serverUser) {
-      const key = (m.content || "").trim();
-      (byContentServer[key] ||= []).push({ id: m.id, created_at: m.created_at });
-    }
-    for (const key of Object.keys(byContentServer)) {
-      const arr = byContentServer[key].sort(
-        (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-      );
-      for (let i = 0; i < arr.length - 1; i++) {
-        const a = arr[i];
-        const b = arr[i + 1];
-        const dt = Math.abs(
-          new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-        );
-        if (dt <= 2000) {
-          // Drop the later one (b) to avoid double server rows
-          keepIds.delete(b.id);
-        }
-      }
-    }
-
-    const final = combined.filter((m) => keepIds.has(m.id));
-    final.sort(
-      (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+    // Sort by timestamp
+    return allMessages.sort((a, b) => 
+      new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
     );
-    return final as MessageType[];
-  }, [messagesData?.messages, optimisticQueues, flattenOptimistic]);
+  }, [messagesData?.messages, optimisticMessages]);
 
   useEffect(() => {
     scrollToBottom();
   }, [messages.length]);
 
-  // Send handler: push optimistic, insert to DB, trigger backend
-  const handleSendMessageWithN8n = useCallback(
+  const handleSendMessage = useCallback(
     async (content: string) => {
       const trimmed = content.trim();
-      if (!trimmed) return;
-      if (isSubmittingRef.current) return;
+      if (!trimmed || isSubmittingRef.current) return;
+      
       if (!userId) {
         toast.error("User not authenticated. Please refresh the page.");
         return;
       }
 
-      // 1) Optimistic add immediately
-      pushOptimistic(trimmed);
+      // Add optimistic message
+      const optimisticId = generateId();
+      const optimisticMsg: OptimisticMessage = {
+        id: optimisticId,
+        content: trimmed,
+        sender: "user",
+        created_at: new Date().toISOString(),
+        isOptimistic: true
+      };
+
+      setOptimisticMessages(prev => [...prev, optimisticMsg]);
 
       try {
         isSubmittingRef.current = true;
         setIsGeneratingBot(true);
 
-        // 2) Insert user message (server will echo via subscription)
+        // Insert message to database
         await insertUserMessage({
           variables: { chatId, content: trimmed },
           fetchPolicy: "no-cache",
-          refetchQueries: [],
-          awaitRefetchQueries: false,
         });
 
-        // 3) Trigger backend workflow (no backend changes here)
+        // Trigger backend workflow
         const resp = await fetch("/api/chat/send-message", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ chatId, content: trimmed, userId }),
         });
+
         const json = await resp.json();
         if (!json?.success) {
           throw new Error(json?.error || "Bot response failed");
@@ -327,39 +170,32 @@ export function ChatView({ chatId }: ChatViewProps) {
 
         toast.success("Message sent!");
       } catch (err) {
-        console.error("send error", err);
-        // Roll back one optimistic for this content
-        setOptimisticQueues((prev) => {
-          const next = new Map(prev);
-          const key = trimmed;
-          const q = next.get(key);
-          if (q && q.length) {
-            q.pop();
-            if (q.length === 0) next.delete(key);
-            else next.set(key, q);
-          }
-          return next;
-        });
+        console.error("Send error:", err);
+        
+        // Remove the failed optimistic message
+        setOptimisticMessages(prev => 
+          prev.filter(msg => msg.id !== optimisticId)
+        );
+        
         toast.error("Failed to send message. Please try again.");
-        throw err;
       } finally {
         setIsGeneratingBot(false);
         isSubmittingRef.current = false;
       }
     },
-    [chatId, userId, insertUserMessage, pushOptimistic]
+    [chatId, userId, insertUserMessage]
   );
 
-  // Debounce to avoid super-fast double send
+  // Prevent rapid successive calls
   const lastCallRef = useRef(0);
-  const handleSendMessage = useCallback(
-    async (content: string) => {
+  const debouncedSendMessage = useCallback(
+    (content: string) => {
       const now = Date.now();
-      if (now - lastCallRef.current < 400) return;
+      if (now - lastCallRef.current < 500) return;
       lastCallRef.current = now;
-      return handleSendMessageWithN8n(content);
+      handleSendMessage(content);
     },
-    [handleSendMessageWithN8n]
+    [handleSendMessage]
   );
 
   if (chatLoading) {
@@ -395,7 +231,7 @@ export function ChatView({ chatId }: ChatViewProps) {
 
   return (
     <div className="flex flex-col h-screen">
-                  {/* Header */}
+      {/* Header */}
       <div className="border-b bg-background/80 backdrop-blur-sm p-4 animate-in fade-in slide-in-from-top-4 duration-1000">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-4 animate-in fade-in slide-in-from-left-4 duration-1000 delay-200">
@@ -491,7 +327,7 @@ export function ChatView({ chatId }: ChatViewProps) {
       </ScrollArea>
 
       {/* Message Input */}
-      <MessageInput onSend={handleSendMessage} disabled={sendingMessage || isGeneratingBot} />
+      <MessageInput onSend={debouncedSendMessage} disabled={sendingMessage || isGeneratingBot} />
     </div>
   );
 }
