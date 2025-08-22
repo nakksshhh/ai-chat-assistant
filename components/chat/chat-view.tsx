@@ -8,7 +8,7 @@ import { MESSAGES_SUBSCRIPTION } from "@/lib/graphql/subscriptions";
 import { Message } from "./message";
 import { MessageInput } from "./message-input";
 import { Button } from "@/components/ui/button";
-import { ArrowLeft, Loader2, Bot } from "lucide-react";
+import { ArrowLeft, Loader2, Bot, User } from "lucide-react";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
 import Link from "next/link";
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
@@ -25,11 +25,6 @@ interface MessageType {
   content: string;
   sender: "user" | "bot";
   created_at: string;
-<<<<<<< HEAD
-=======
-  // user_id?: string;
-  // chat_id?: string;
->>>>>>> 117857af6592175ff16fec884bb195548169f1ec
 }
 
 // Simplified optimistic message type
@@ -37,7 +32,6 @@ interface OptimisticMessage {
   id: string;
   content: string;
   sender: "user";
-<<<<<<< HEAD
   created_at: string;
   isOptimistic: true;
 }
@@ -46,10 +40,6 @@ interface OptimisticMessage {
 function generateId() {
   return `opt_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 }
-=======
-  // user_id?: string;
-};
->>>>>>> 117857af6592175ff16fec884bb195548169f1ec
 
 export function ChatView({ chatId }: ChatViewProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -79,75 +69,7 @@ export function ChatView({ chatId }: ChatViewProps) {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
 
-<<<<<<< HEAD
   // Clean up optimistic messages when real messages arrive
-=======
-  // Helpers to manage optimistic queues
-  const pushOptimistic = useCallback((content: string) => {
-    const clientId = uuid();
-    const nowISO = new Date().toISOString();
-    const entry: OptimisticMsg = {
-      clientId,
-      content: content.trim(),
-      created_at: nowISO,
-      sender: "user",
-    };
-
-    setOptimisticQueues((prev) => {
-      const next = new Map(prev);
-      const key = entry.content;
-      const q = next.get(key) || [];
-      q.push(entry);
-      next.set(key, q);
-      return next;
-    });
-
-    return entry.clientId;
-  }, []);
-
-  const popOptimisticIfMatch = useCallback(
-    (content: string, serverCreatedAt: string, windowMs = 10000) => {
-      setOptimisticQueues((prev) => {
-        const next = new Map(prev);
-        const key = (content || "").trim();
-        const q = next.get(key);
-        if (!q || q.length === 0) return prev;
-
-        const sTs = new Date(serverCreatedAt).getTime();
-        // Find the earliest optimistic whose time is within the window
-        let idx = -1;
-        for (let i = 0; i < q.length; i++) {
-          const oTs = new Date(q[i].created_at).getTime();
-          if (Math.abs(oTs - sTs) <= windowMs) {
-            idx = i;
-            break;
-          }
-        }
-
-        if (idx >= 0) {
-          q.splice(idx, 1);
-          if (q.length === 0) next.delete(key);
-          else next.set(key, q);
-          return next;
-        }
-        return prev;
-      });
-    },
-    []
-  );
-
-  const flattenOptimistic = useCallback((map: Map<string, OptimisticMsg[]>) => {
-    const out: OptimisticMsg[] = [];
-    map.forEach((q) => {
-      for (let i = 0; i < q.length; i++) {
-        out.push(q[i]);
-      }
-    });
-    return out;
-  }, []);
-
-  // Reconcile when subscription updates arrive: remove exactly one optimistic per matching server user message
->>>>>>> 117857af6592175ff16fec884bb195548169f1ec
   useEffect(() => {
     const serverMessages = messagesData?.messages || [];
     
@@ -166,7 +88,6 @@ export function ChatView({ chatId }: ChatViewProps) {
     });
   }, [messagesData?.messages]);
 
-<<<<<<< HEAD
   // Combine and deduplicate messages
   const messages = useMemo(() => {
     const serverMessages: MessageType[] = messagesData?.messages || [];
@@ -198,175 +119,6 @@ export function ChatView({ chatId }: ChatViewProps) {
       new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
     );
   }, [messagesData?.messages, optimisticMessages]);
-=======
-    for (let i = 0; i < server.length; i++) {
-      const sm = server[i];
-      if (sm.sender === "user" && sm.content && sm.content.trim()) {
-        popOptimisticIfMatch(sm.content, sm.created_at, 10000);
-      }
-    }
-  }, [messagesData?.messages, popOptimisticIfMatch]);
-
-  // Compose final message list: server messages + remaining optimistic (with temp ids)
-  const messages = useMemo(() => {
-    const server: MessageType[] = messagesData?.messages || [];
-    const optimisticList = flattenOptimistic(optimisticQueues);
-
-    // TEMP DEBUG: detect potential duplicate server rows (content within 5s)
-    (function debugDupes() {
-      const userMsgs = server.filter((m) => m.sender === "user");
-      const byContent: Record<string, MessageType[]> = {};
-      for (let i = 0; i < userMsgs.length; i++) {
-        const m = userMsgs[i];
-        const key = (m.content || "").trim();
-        if (!byContent[key]) byContent[key] = [];
-        byContent[key].push(m);
-      }
-      const keys = Object.keys(byContent);
-      for (let k = 0; k < keys.length; k++) {
-        const content = keys[k];
-        const arr = byContent[content];
-        if (arr && arr.length > 1) {
-          const sorted = arr
-            .slice()
-            .sort(
-              (a, b) =>
-                new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-            );
-          const closePairs: Array<[MessageType, MessageType]> = [];
-          for (let i = 0; i < sorted.length - 1; i++) {
-            const dt = Math.abs(
-              new Date(sorted[i + 1].created_at).getTime() -
-                new Date(sorted[i].created_at).getTime()
-            );
-            if (dt <= 5000) {
-              closePairs.push([sorted[i], sorted[i + 1]]);
-            }
-          }
-          if (closePairs.length) {
-            console.log(
-              "🟡 Potential duplicate SERVER rows for content:",
-              content,
-              closePairs.map(([a, b]) => ({
-                a_id: a.id,
-                a_ts: a.created_at,
-                b_id: b.id,
-                b_ts: b.created_at,
-              }))
-            );
-          }
-        }
-      }
-    })();
-
-    const combined: Array<MessageType | (OptimisticMsg & { id: string })> = [];
-
-    // Push server messages
-    for (let i = 0; i < server.length; i++) {
-      combined.push(server[i]);
-    }
-    // Push remaining optimistic as temporary items
-    for (let i = 0; i < optimisticList.length; i++) {
-      const o = optimisticList[i];
-      combined.push({
-        id: `optimistic:${o.clientId}`,
-        content: o.content,
-        sender: "user",
-        created_at: o.created_at,
-      } as any);
-    }
-
-    // 1) Prefer server over optimistic when near-duplicates exist (1s window)
-    const byContentAll: Record<
-      string,
-      Array<{ id: string; sender: string; created_at: string }>
-    > = {};
-    for (let i = 0; i < combined.length; i++) {
-      const m = combined[i];
-      const key = (m.content || "").trim();
-      if (!byContentAll[key]) byContentAll[key] = [];
-      byContentAll[key].push({
-        id: m.id,
-        sender: (m as any).sender,
-        created_at: m.created_at,
-      });
-    }
-
-    let keepIds = new Set<string>();
-    for (let i = 0; i < combined.length; i++) {
-      keepIds.add(combined[i].id);
-    }
-
-    const contentKeys = Object.keys(byContentAll);
-    for (let c = 0; c < contentKeys.length; c++) {
-      const key = contentKeys[c];
-      const arr = byContentAll[key].slice().sort(
-        (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-      );
-      for (let i = 0; i < arr.length - 1; i++) {
-        const a = arr[i];
-        const b = arr[i + 1];
-        const dt = Math.abs(
-          new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-        );
-        if (dt <= 1000) {
-          const isAServer = !a.id.startsWith("optimistic:");
-          const isBServer = !b.id.startsWith("optimistic:");
-          if (isAServer && !isBServer) keepIds.delete(b.id);
-          else if (!isAServer && isBServer) keepIds.delete(a.id);
-        }
-      }
-    }
-
-    // 2) Server-only dedupe: for user messages with identical content within 2s, keep the EARLIER one
-    const serverUser: MessageType[] = [];
-    for (let i = 0; i < combined.length; i++) {
-      const m = combined[i] as any;
-      if (m.sender === "user" && typeof m.id === "string" && !m.id.startsWith("optimistic:")) {
-        serverUser.push(m as MessageType);
-      }
-    }
-
-    const byContentServer: Record<string, Array<{ id: string; created_at: string }>> = {};
-    for (let i = 0; i < serverUser.length; i++) {
-      const m = serverUser[i];
-      const key = (m.content || "").trim();
-      if (!byContentServer[key]) byContentServer[key] = [];
-      byContentServer[key].push({ id: m.id, created_at: m.created_at });
-    }
-
-    const serverKeys = Object.keys(byContentServer);
-    for (let s = 0; s < serverKeys.length; s++) {
-      const key = serverKeys[s];
-      const arr = byContentServer[key].slice().sort(
-        (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-      );
-      for (let i = 0; i < arr.length - 1; i++) {
-        const a = arr[i];
-        const b = arr[i + 1];
-        const dt = Math.abs(
-          new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-        );
-        if (dt <= 2000) {
-          // Drop the later one (b) to avoid double server rows
-          keepIds.delete(b.id);
-        }
-      }
-    }
-
-    const final: MessageType[] = [];
-    for (let i = 0; i < combined.length; i++) {
-      const m = combined[i] as MessageType;
-      if (keepIds.has(m.id)) final.push(m);
-    }
-
-    final.sort(
-      (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-    );
-
-    return final;
-  }, [messagesData?.messages, optimisticQueues, flattenOptimistic]);
->>>>>>> 117857af6592175ff16fec884bb195548169f1ec
 
   useEffect(() => {
     scrollToBottom();
