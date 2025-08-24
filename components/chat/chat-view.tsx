@@ -1,9 +1,8 @@
 "use client";
 
-import { useQuery, useMutation, useSubscription } from "@apollo/client";
+import { useQuery, useSubscription } from "@apollo/client";
 import { useUserId } from "@nhost/nextjs";
 import { GET_CHAT } from "@/lib/graphql/queries";
-import { INSERT_USER_MESSAGE } from "@/lib/graphql/mutations";
 import { MESSAGES_SUBSCRIPTION } from "@/lib/graphql/subscriptions";
 import { Message } from "./message";
 import { MessageInput } from "./message-input";
@@ -44,6 +43,7 @@ function generateId() {
 export function ChatView({ chatId }: ChatViewProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [isGeneratingBot, setIsGeneratingBot] = useState(false);
+  const [sendingMessage, setSendingMessage] = useState(false);
   const [optimisticMessages, setOptimisticMessages] = useState<OptimisticMessage[]>([]);
   const isSubmittingRef = useRef(false);
 
@@ -60,9 +60,8 @@ export function ChatView({ chatId }: ChatViewProps) {
     skip: !chatId,
     // Add this to prevent duplicate subscriptions
     fetchPolicy: 'cache-and-network'
-  });
+  } as any);
 
-  const [insertUserMessage, { loading: sendingMessage }] = useMutation(INSERT_USER_MESSAGE);
   const userId = useUserId();
 
   const scrollToBottom = () => {
@@ -71,7 +70,7 @@ export function ChatView({ chatId }: ChatViewProps) {
 
   // Clean up optimistic messages when real messages arrive
   useEffect(() => {
-    const serverMessages = messagesData?.messages || [];
+    const serverMessages: MessageType[] = messagesData?.messages || [];
     
     setOptimisticMessages(prev => {
       return prev.filter(optMsg => {
@@ -79,7 +78,7 @@ export function ChatView({ chatId }: ChatViewProps) {
         // within the last 30 seconds (to account for any delays)
         const cutoffTime = new Date(Date.now() - 30000).toISOString();
         
-        return !serverMessages.some(serverMsg => 
+        return !serverMessages.some((serverMsg: MessageType) => 
           serverMsg.sender === "user" &&
           serverMsg.content.trim() === optMsg.content.trim() &&
           serverMsg.created_at > cutoffTime
@@ -149,12 +148,9 @@ export function ChatView({ chatId }: ChatViewProps) {
       try {
         isSubmittingRef.current = true;
         setIsGeneratingBot(true);
+        setSendingMessage(true);
 
-        // Insert message to database
-        await insertUserMessage({
-          variables: { chatId, content: trimmed },
-          fetchPolicy: "no-cache",
-        });
+        // Do not insert on client; API will insert both user and bot messages
 
         // Trigger backend workflow
         const resp = await fetch("/api/chat/send-message", {
@@ -181,19 +177,22 @@ export function ChatView({ chatId }: ChatViewProps) {
       } finally {
         setIsGeneratingBot(false);
         isSubmittingRef.current = false;
+        setSendingMessage(false);
       }
     },
-    [chatId, userId, insertUserMessage]
+    [chatId, userId]
   );
 
   // Prevent rapid successive calls
   const lastCallRef = useRef(0);
   const debouncedSendMessage = useCallback(
-    (content: string) => {
+    (content: string): Promise<void> => {
       const now = Date.now();
-      if (now - lastCallRef.current < 500) return;
+      if (now - lastCallRef.current < 500) {
+        return Promise.resolve();
+      }
       lastCallRef.current = now;
-      handleSendMessage(content);
+      return handleSendMessage(content);
     },
     [handleSendMessage]
   );
